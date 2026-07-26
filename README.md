@@ -2,7 +2,7 @@
 
 Un bot Discord simple qui permet de récupérer et télécharger des vidéos YouTube supprimées en utilisant la **Wayback Machine** d'Archive.org.
 
-[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/template/deploy?referrerCode=manus&repo=https://github.com/ytbarturery-cyber/discord-wayback-bot&envs=DISCORD_TOKEN)
+[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/template/deploy?referrerCode=manus&repo=https://github.com/rotpierre59345-ui/discord-wayback-bot&envs=DISCORD_TOKEN)
 
 ## 🚀 Fonctionnalités
 

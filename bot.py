@@ -28,15 +28,21 @@ async def download(interaction: discord.Interaction, url: str):
             await interaction.followup.send(f"Aucune archive trouvée pour {url} sur la Wayback Machine.")
             return
 
-        await interaction.followup.send(f"Archive trouvée: {archive_url}. Tentative de téléchargement...")
+        await interaction.followup.send(f"Archive trouvée : <{archive_url}>. Tentative de téléchargement (cela peut prendre 1-2 minutes)...")
 
         # Utiliser yt-dlp pour télécharger la vidéo depuis l'archive
+        # On utilise un nom de fichier unique pour éviter les conflits
+        video_id = interaction.id
+        filename = f"video_{video_id}.mp4"
+        
         ydl_opts = {
             'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-            'outtmpl': 'video.mp4',
+            'outtmpl': filename,
             'noplaylist': True,
-            'max_filesize': 50 * 1024 * 1024, # Limite de 50MB pour Discord
+            'max_filesize': 25 * 1024 * 1024, # Limite de 25MB pour être sûr que ça passe sur Discord sans Nitro
             'merge_output_format': 'mp4',
+            'quiet': True,
+            'no_warnings': True,
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:

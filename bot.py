@@ -6,6 +6,7 @@ import yt_dlp
 import requests
 from waybackpy import WaybackMachineCDXServerAPI
 import time
+import asyncio
 
 # Configuration du bot Discord
 intents = discord.Intents.default()
@@ -26,7 +27,6 @@ def get_wayback_url(youtube_url):
     user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
     cdx = WaybackMachineCDXServerAPI(youtube_url, user_agent=user_agent)
     try:
-        # On cherche la capture la plus ancienne ou la plus stable
         archive = cdx.oldest()
         if archive:
             return archive.archive_url
@@ -36,65 +36,84 @@ def get_wayback_url(youtube_url):
 
 @bot.tree.command(name="download", description="Télécharge une vidéo YouTube supprimée via la Wayback Machine")
 async def download(interaction: discord.Interaction, url: str):
-    await interaction.response.defer(thinking=True) # Indique que le bot travaille
+    await interaction.response.defer(thinking=True)
+    
+    status_message = await interaction.followup.send("🔍 Recherche d'une archive sur la Wayback Machine...")
 
     archive_url = get_wayback_url(url)
     
     if not archive_url:
-        await interaction.followup.send(f"❌ Aucune archive trouvée pour cette URL sur la Wayback Machine.")
+        await interaction.edit_original_response(content=f"❌ Aucune archive trouvée pour cette URL.")
         return
 
-    await interaction.followup.send(f"🔍 Archive trouvée : <{archive_url}>\n⏳ Tentative de téléchargement du fichier vidéo...")
+    await interaction.edit_original_response(content=f"✅ Archive trouvée : <{archive_url}>\n⏳ Initialisation du téléchargement (cela peut être lent)...")
 
-    # Paramètres yt-dlp optimisés pour Wayback Machine
-    # On force le format mp4 et on limite la taille pour Discord
     video_id = str(int(time.time()))
     output_filename = f"video_{video_id}.mp4"
     
+    # Fonction de callback pour suivre la progression
+    def progress_hook(d):
+        if d['status'] == 'downloading':
+            p = d.get('_percent_str', '0%')
+            s = d.get('_speed_str', 'N/A')
+            # On ne met pas à jour trop souvent pour éviter de se faire rate-limit par Discord
+            # Cette fonction est appelée dans un thread séparé par yt-dlp
+            pass
+
     ydl_opts = {
         'format': 'best[ext=mp4]/best',
         'outtmpl': output_filename,
         'noplaylist': True,
-        'max_filesize': 24 * 1024 * 1024, # 24MB pour rester sous la limite de 25MB de Discord
-        'quiet': False,
-        'no_warnings': False,
-        # Wayback Machine nécessite souvent des headers spécifiques
+        'max_filesize': 24 * 1024 * 1024,
+        'quiet': True,
+        'no_warnings': True,
+        'progress_hooks': [progress_hook],
         'http_headers': {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
         }
     }
 
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # On tente d'extraire et télécharger
-            info = ydl.extract_info(archive_url, download=True)
-            # yt-dlp peut changer l'extension, on récupère le nom final
-            actual_filename = ydl.prepare_filename(info)
-            
-            # Si l'extension a changé (ex: .mkv), on le note
-            if not os.path.exists(actual_filename) and os.path.exists(output_filename):
-                actual_filename = output_filename
+        # On lance le téléchargement dans un thread séparé pour ne pas bloquer l'event loop
+        loop = asyncio.get_event_loop()
+        
+        await interaction.edit_original_response(content=f"✅ Archive trouvée !\n📥 Téléchargement en cours depuis les serveurs d'Archive.org... (Veuillez patienter)")
+        
+        def run_ydl():
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                return ydl.extract_info(archive_url, download=True)
+
+        info = await loop.run_in_executor(None, run_ydl)
+        actual_filename = ydl_opts['outtmpl']
+        
+        if not os.path.exists(actual_filename):
+            # Essayer de trouver le fichier si yt-dlp a changé l'extension
+            for f in os.listdir('.'):
+                if f.startswith(f"video_{video_id}"):
+                    actual_filename = f
+                    break
 
         if os.path.exists(actual_filename):
+            await interaction.edit_original_response(content="📤 Téléchargement terminé ! Envoi du fichier vers Discord...")
+            
             filesize = os.path.getsize(actual_filename)
             if filesize > 25 * 1024 * 1024:
-                await interaction.followup.send(f"⚠️ La vidéo a été téléchargée mais elle pèse {filesize/(1024*1024):.1f}MB, ce qui dépasse la limite de Discord (25MB).")
+                await interaction.edit_original_response(content=f"⚠️ La vidéo fait {filesize/(1024*1024):.1f}MB (Limite Discord : 25MB). Impossible de l'envoyer.")
             else:
-                await interaction.followup.send(content="✅ Voici votre vidéo :", file=discord.File(actual_filename))
+                await interaction.followup.send(content="✅ Voici votre vidéo !", file=discord.File(actual_filename))
+                await interaction.delete_original_response() # Supprime le message de statut
             
-            # Nettoyage
             os.remove(actual_filename)
         else:
-            await interaction.followup.send("❌ Échec du téléchargement : Le fichier n'a pas pu être généré.")
+            await interaction.edit_original_response(content="❌ Échec : Le fichier vidéo n'a pas pu être récupéré.")
 
     except Exception as e:
-        error_msg = str(e)
-        if "File is too large" in error_msg:
-            await interaction.followup.send("❌ La vidéo archivée est trop volumineuse pour être envoyée sur Discord (>25MB).")
+        error_str = str(e)
+        if "File is too large" in error_str:
+            await interaction.edit_original_response(content="❌ La vidéo est trop volumineuse pour Discord (>25MB).")
         else:
-            await interaction.followup.send(f"❌ Une erreur est survenue lors du téléchargement : {error_msg}")
+            await interaction.edit_original_response(content=f"❌ Erreur lors du téléchargement : {error_str[:100]}...")
         
-        # Nettoyage au cas où
         if os.path.exists(output_filename):
             os.remove(output_filename)
 
@@ -103,4 +122,4 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 if DISCORD_TOKEN:
     bot.run(DISCORD_TOKEN)
 else:
-    print("ERREUR : DISCORD_TOKEN manquant dans les variables d'environnement.")
+    print("ERREUR : DISCORD_TOKEN manquant.")
